@@ -20,7 +20,7 @@
     "@nomicfoundation/hardhat-network-helpers": "^1.0.0",
     "@nomicfoundation/hardhat-verify": "^2.0.0",
     "@nomicfoundation/ignition-core": "^0.15.6",
-    "@nomiclabs/hardhat-ethers": "^2.2.3",
+    
     "@openzeppelin/contracts": "^5.0.2",
     "@typechain/ethers-v6": "^0.5.0",
     "@typechain/hardhat": "^9.0.0",
@@ -28,7 +28,7 @@
     "@types/mocha": ">=9.1.0",
     "chai": "^4.2.0",
     "dotenv": "^16.4.5",
-    "ethers": "5.7.2",
+    "ethers": "^6.13.3",
     "hardhat-gas-reporter": "^1.0.8",
     "solidity-coverage": "^0.8.1",
     "ts-node": ">=8.0.0",

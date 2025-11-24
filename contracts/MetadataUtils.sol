@@ -7,36 +7,39 @@ import "@openzeppelin/contracts/utils/Base64.sol";
 contract MetadataUtils {
     using Strings for uint256;
 
+    // Attribute types (string-based) for flexible external callers
     struct Attribute {
         string trait_type;
         string value;
     }
-        struct Attributes {
+    struct Attributes {
         Attribute[] attributes;
     }
 
-    function parseAnimation(string memory css, string memory html, string memory js, bytes32 hash, string memory baseURI) public pure returns (string memory) {
-        string memory mintingHash = string(abi.encodePacked(Strings.toHexString(uint256(hash), 32)));
+    // Attribute type matching Spectra's bytes32 compact representation
+    struct AttributeB32 {
+        bytes32 trait_type;
+        bytes32 value;
+    }
+
+    function parseAnimation(
+        string memory css,
+        string memory html,
+        string memory js,
+        bytes32 hash,
+        string memory baseURI
+    ) public pure returns (string memory) {
+        string memory mintingHash = string(
+            abi.encodePacked(Strings.toHexString(uint256(hash), 32))
+        );
 
         string memory seed = string(
             abi.encodePacked(
                 "'<script>",
-                "var injectedSeed = ", "'", mintingHash, "';",
-                /*
-                "function cyrb128($) {",
-                "let _ = 1779033703, u = 3144134277, i = 1013904242, l = 2773480762;",
-                "for (let n = 0, r; n < $.length; n++) _ = u ^ Math.imul(_ ^ (r = $.charCodeAt(n)), 597399067), u = i ^ Math.imul(u ^ r, 2869860233), i = l ^ Math.imul(i ^ r, 951274213), l = _ ^ Math.imul(l ^ r, 2716044179);",
-                "return _ = Math.imul(i ^ _ >>> 18, 597399067), u = Math.imul(l ^ u >>> 22, 2869860233), i = Math.imul(_ ^ i >>> 17, 951274213), l = Math.imul(u ^ l >>> 19, 2716044179), [(_ ^ u ^ i ^ l) >>> 0, (u ^ _) >>> 0, (i ^ _) >>> 0, (l ^ _) >>> 0];",
-                "}",
-                "function sfc32($, _, u, i) {",
-                "return function () {",
-                "u >>>= 0, i >>>= 0;",
-                "var l = ($ >>>= 0) + (_ >>>= 0) | 0;",
-                "return $ = _ ^ _ >>> 9, _ = u + (u << 3) | 0, u = (u = u << 21 | u >>> 11) + (l = l + (i = i + 1 | 0) | 0) | 0, (l >>> 0) / 4294967296;",
-                "};",
-                "}",
-                "let mathRand = sfc32(...cyrb128(seed));"
-                */
+                "var injectedSeed = ",
+                "'",
+                mintingHash,
+                "';",
                 "</script>'"
             )
         );
@@ -46,19 +49,119 @@ contract MetadataUtils {
                 "<!DOCTYPE html>",
                 "<html>",
                 "<head>",
-                "<style>", css, "</style>",
+                "<style>",
+                css,
+                "</style>",
                 seed,
                 "'</head>",
                 "<body>",
                 html,
-                "<script>", js, "</script>",
+                "<script>",
+                js,
+                "</script>",
                 "'</body>",
                 "</html>"
             )
         );
 
-        return string(abi.encodePacked(baseURI, Base64.encode(bytes(animationString))));
+        return string(
+            abi.encodePacked(baseURI, Base64.encode(bytes(animationString)))
+        );
     }
 
+    function buildTokenJSON(
+        bytes32 name,
+        string memory description,
+        string memory image,
+        string memory animationUrl,
+        string memory attributes,
+        string memory baseURI
+    ) public pure returns (string memory) {
+        bytes memory dataURI = abi.encodePacked(
+            "{",
+            encodeKeyValue("name", name),
+            encodeKeyValue("description", description),
+            encodeKeyValue("image", image),
+            encodeKeyValue("animation_url", animationUrl),
+            encodeAttributes(attributes),
+            "}"
+        );
+        return string(abi.encodePacked(baseURI, Base64.encode(dataURI)));
+    }
 
+    function buildProjectJSON(
+        bytes32 name,
+        string memory description,
+        string memory image,
+        bytes32 artist,
+        uint256 price,
+        uint256 supply,
+        uint256 maxSupply,
+        bool onSale,
+        string memory baseURI
+    ) public pure returns (string memory) {
+        bytes memory dataURI = abi.encodePacked(
+            "{",
+            encodeKeyValue("name", name),
+            encodeKeyValue("description", description),
+            encodeKeyValue("image", image),
+            encodeKeyValue("artist", artist),
+            encodeKeyValue("price", Strings.toString(price)),
+            encodeKeyValue("supply", Strings.toString(supply)),
+            encodeKeyValue("maxSupply", Strings.toString(maxSupply)),
+            encodeKeyValue("onSale", onSale ? "true" : "false"),
+            "}"
+        );
+        return string(abi.encodePacked(baseURI, Base64.encode(dataURI)));
+    }
+
+    function encodeKeyValue(
+        bytes32 key,
+        bytes32 value
+    ) public pure returns (bytes memory) {
+        return abi.encodePacked('"', key, '": "', value, '", ');
+    }
+
+    function encodeKeyValue(
+        string memory key,
+        string memory value
+    ) public pure returns (bytes memory) {
+        return abi.encodePacked('"', key, '": "', value, '", ');
+    }
+
+    function encodeAttributes(
+        string memory _attributes
+    ) public pure returns (bytes memory) {
+        return abi.encodePacked('"traits": ', _attributes);
+    }
+
+    function parseAttributesB32(
+        AttributeB32[] memory attributes
+    ) public pure returns (string memory) {
+        string memory attributesString = "[";
+        for (uint256 i = 0; i < attributes.length; i++) {
+            attributesString = string(
+                abi.encodePacked(
+                    attributesString,
+                    "{",
+                    '"trait_type":"',
+                    attributes[i].trait_type,
+                    '",',
+                    '"value":"',
+                    attributes[i].value,
+                    '"',
+                    "}"
+                )
+            );
+
+            if (i < attributes.length - 1) {
+                attributesString = string(
+                    abi.encodePacked(attributesString, ",")
+                );
+            }
+        }
+
+        attributesString = string(abi.encodePacked(attributesString, "]"));
+        return attributesString;
+    }
 }

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
-import "@openzeppelin/contracts/utils/Base64.sol";
 import "@openzeppelin/contracts/token/common/ERC2981.sol";
 import "./AccessControl.sol";
 import "./MetadataUtils.sol";
+import "./GenerativeLib.sol";
+import "./IRenderer.sol";
+import "./IProjectRegistry.sol";
 
 contract Spectra is ERC721, ERC2981 {
     MetadataUtils metadataUtils;
@@ -65,6 +67,10 @@ uint256 indexed token, uint256 indexed value, address indexed triggeredBy
     mapping(uint256 => uint256[]) internal projectIdToTokenIds;
     mapping(uint256 => uint256) public tokenIdToPricePerTokenInWei;
 
+    // Optional external renderer and registry
+    address public renderer;
+    address public projectRegistry;
+
     constructor(
         address _accessControl,
         address _metadataUtilsAddress
@@ -81,8 +87,12 @@ uint256 indexed token, uint256 indexed value, address indexed triggeredBy
     ) public view virtual override returns (string memory) {
         _requireMinted(tokenId);
 
-        Project storage _project = projects[tokenIdToProjectId[tokenId]];
-        Animation storage _animation = _project.animation;
+        if (renderer != address(0)) {
+            return IRenderer(renderer).tokenURIFor(address(this), tokenId);
+        }
+
+        Project memory _project = _getProject(tokenIdToProjectId[tokenId]);
+        Animation memory _animation = _project.animation;
         // bytes32 hash = hashes[tokenId].hash;
         bytes32 hash = hashes[tokenId];
 
@@ -96,38 +106,17 @@ uint256 indexed token, uint256 indexed value, address indexed triggeredBy
         string memory _image = images[tokenId];
         string memory attributeString = token_attributes[tokenId];
 
-        bytes memory dataURI = abi.encodePacked(
-            "{",
-            encodeKeyValue("name", _project.name),
-            encodeKeyValue("description", _project.description),
-            encodeKeyValue("image", _image),
-            encodeKeyValue("animation_url", animationString),
-            encodeAttributes(attributeString),
-            "}"
+        return metadataUtils.buildTokenJSON(
+            _project.name,
+            _project.description,
+            _image,
+            animationString,
+            attributeString,
+            _baseURI()
         );
-
-        return string(abi.encodePacked(_baseURI(), Base64.encode(dataURI)));
     }
 
-    function encodeKeyValue(
-        bytes32 key,
-        bytes32 value
-    ) internal pure returns (bytes memory) {
-        return abi.encodePacked('"', key, '": "', value, '", ');
-    }
-
-    function encodeKeyValue(
-        string memory key,
-        string memory value
-    ) internal pure returns (bytes memory) {
-        return abi.encodePacked('"', key, '": "', value, '", ');
-    }
-
-    function encodeAttributes(
-        string memory _attributes
-    ) internal pure returns (bytes memory) {
-        return abi.encodePacked('"traits": ', _attributes);
-    }
+    // JSON helpers moved to MetadataUtils to reduce bytecode size
 
     function create(
         address _artistAddress,
@@ -158,6 +147,23 @@ uint256 indexed token, uint256 indexed value, address indexed triggeredBy
         project.animation = _animation;
         project.artistAddress = _artistAddress;
         project.price = price;
+        // If a registry is set, mirror this project for external readers
+        if (projectRegistry != address(0)) {
+            IProjectRegistry.Animation memory anim = IProjectRegistry.Animation({ html: _animation.html, css: _animation.css, js: _animation.js });
+            IProjectRegistry.Project memory rp = IProjectRegistry.Project({
+                name: _name,
+                description: _description,
+                artist: _artist,
+                image: _image,
+                artistAddress: _artistAddress,
+                price: price,
+                supply: 0,
+                maxSupply: _maxSupply,
+                onSale: false,
+                animation: anim
+            });
+            IProjectRegistry(projectRegistry).setProject(projectId, rp);
+        }
         return projectId;
     }
 
@@ -207,10 +213,53 @@ uint256 indexed token, uint256 indexed value, address indexed triggeredBy
         _requireMinted(tokenId);
 
         hashes[tokenId] = _hash;
-        token_attributes[tokenId] = parseAttributes(attribute);
+        MetadataUtils.AttributeB32[] memory attrs = new MetadataUtils.AttributeB32[](attribute.length);
+        for (uint256 i = 0; i < attribute.length; i++) {
+            attrs[i] = MetadataUtils.AttributeB32({
+                trait_type: attribute[i].trait_type,
+                value: attribute[i].value
+            });
+        }
+        token_attributes[tokenId] = metadataUtils.parseAttributesB32(attrs);
         images[tokenId] = _image;
 
         return tokenId;
+    }
+
+    // Minimal payload for external renderers
+    function getTokenPayload(uint256 tokenId)
+        external
+        view
+        returns (
+            bytes32 name,
+            string memory description,
+            string memory image,
+            string memory css,
+            string memory html,
+            string memory js,
+            bytes32 hash
+        )
+    {
+        _requireMinted(tokenId);
+        Project storage _project = projects[tokenIdToProjectId[tokenId]];
+        Animation storage _animation = _project.animation;
+        return (
+            _project.name,
+            _project.description,
+            images[tokenId],
+            _animation.css,
+            _animation.html,
+            _animation.js,
+            hashes[tokenId]
+        );
+    }
+
+    // Admin hooks to set optional external modules
+    function setRenderer(address _renderer) external _requireHasRole(AccessControl.Role.Admin) {
+        renderer = _renderer;
+    }
+    function setProjectRegistry(address _registry) external _requireHasRole(AccessControl.Role.Admin) {
+        projectRegistry = _registry;
     }
 
     /*
@@ -259,36 +308,7 @@ uint256 indexed token, uint256 indexed value, address indexed triggeredBy
     }
     */
 
-    function parseAttributes(
-        Attribute[] memory attributes
-    ) internal pure returns (string memory) {
-        string memory attributesString = "[";
-        for (uint256 i = 0; i < attributes.length; i++) {
-            attributesString = string(
-                abi.encodePacked(
-                    attributesString,
-                    "{",
-                    '"trait_type":"',
-                    attributes[i].trait_type,
-                    '",',
-                    '"value":"',
-                    attributes[i].value,
-                    '"',
-                    "}"
-                )
-            );
-
-            if (i < attributes.length - 1) {
-                attributesString = string(
-                    abi.encodePacked(attributesString, ",")
-                );
-            }
-        }
-
-        attributesString = string(abi.encodePacked(attributesString, "]"));
-
-        return attributesString;
-    }
+    // attributes parsing moved to MetadataUtils
 
     function mintingHash(uint256 tokenId) internal view returns (bytes32) {
         return
@@ -555,24 +575,67 @@ return projectIdToPricePerTokenInWei[projectId];
     function parseProject(
         Project storage project
     ) internal view returns (string memory) {
-        bytes memory dataURI = abi.encodePacked(
-            "{",
-            encodeKeyValue("name", project.name),
-            encodeKeyValue("description", project.description),
-            encodeKeyValue("image", project.image),
-            encodeKeyValue("artist", project.artist),
-            // encodeKeyValue("price", bytes32(projectIdToPricePerTokenInWei[projectId])),
-            encodeKeyValue("price", Strings.toString(project.price)),
-            encodeKeyValue("supply", Strings.toString(project.supply)),
-            encodeKeyValue(
-                "maxSupply",
-                Strings.toString(project.maxSupply)
-            ),
-            encodeKeyValue("onSale", project.onSale ? "true" : "false"),
-            "}"
+        return metadataUtils.buildProjectJSON(
+            project.name,
+            project.description,
+            project.image,
+            project.artist,
+            project.price,
+            project.supply,
+            project.maxSupply,
+            project.onSale,
+            _baseURI()
         );
+    }
 
-        return string(abi.encodePacked(_baseURI(), Base64.encode(dataURI)));
+    function baseURI() external view returns (string memory) {
+        return _baseURI();
+    }
+
+    function getTokenAttributes(uint256 tokenId) external view returns (string memory) {
+        _requireMinted(tokenId);
+        return token_attributes[tokenId];
+    }
+
+    function _getProject(uint256 projectId) internal view returns (Project memory p) {
+        if (projectRegistry == address(0)) {
+            Project storage sproj = projects[projectId];
+            return sproj;
+        } else {
+            IProjectRegistry.Project memory rp = IProjectRegistry(projectRegistry).getProject(projectId);
+            Animation memory anim = Animation({ html: rp.animation.html, css: rp.animation.css, js: rp.animation.js });
+            p = Project({
+                name: rp.name,
+                description: rp.description,
+                artist: rp.artist,
+                image: rp.image,
+                artistAddress: rp.artistAddress,
+                price: rp.price,
+                supply: rp.supply,
+                maxSupply: rp.maxSupply,
+                onSale: rp.onSale,
+                animation: anim
+            });
+        }
+    }
+
+    function mirrorProjectToRegistry(uint256 projectId) external _requireHasRole(AccessControl.Role.Admin) {
+        require(projectRegistry != address(0), "Registry not set");
+        Project storage sproj = projects[projectId];
+        IProjectRegistry.Animation memory anim = IProjectRegistry.Animation({ html: sproj.animation.html, css: sproj.animation.css, js: sproj.animation.js });
+        IProjectRegistry.Project memory rp = IProjectRegistry.Project({
+            name: sproj.name,
+            description: sproj.description,
+            artist: sproj.artist,
+            image: sproj.image,
+            artistAddress: sproj.artistAddress,
+            price: sproj.price,
+            supply: sproj.supply,
+            maxSupply: sproj.maxSupply,
+            onSale: sproj.onSale,
+            animation: anim
+        });
+        IProjectRegistry(projectRegistry).setProject(projectId, rp);
     }
 
     function _requireMinted(uint256 tokenId) internal view {
@@ -616,5 +679,28 @@ return projectIdToPricePerTokenInWei[projectId];
             "Spectra: must have role"
         );
         _;
+    }
+
+    // Generative genome helpers for on-chain art parameters
+    function tokenSeed(uint256 tokenId) public view returns (bytes32) {
+        _requireMinted(tokenId);
+        return keccak256(abi.encodePacked(hashes[tokenId], tokenId));
+    }
+
+    function getGenome(uint256 tokenId)
+        public
+        view
+        returns (
+            bytes32 seed,
+            uint256 entropy,
+            uint256 coherence,
+            uint256 rhythm,
+            uint256 hue,
+            uint256 dopamine
+        )
+    {
+        seed = tokenSeed(tokenId);
+        GenerativeLib.Genome memory g = GenerativeLib.genomeFromSeed(seed);
+        return (g.seed, g.entropy, g.coherence, g.rhythm, g.hue, g.dopamine);
     }
 }
